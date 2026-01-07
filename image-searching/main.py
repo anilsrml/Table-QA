@@ -1,142 +1,172 @@
-# -*- coding: utf-8 -*-
-import os
+"""
+Text-to-Image Arama Sistemi - Ana Komut Satırı Arayüzü
+
+Kullanım:
+    1. Görselleri indeksleme:
+       python main.py index --image-dir ./images --output-dir ./indices
+    
+    2. Metin ile arama yapma:
+       python main.py search --query "a red car" --index-dir ./indices --top-k 5
+"""
+import argparse
 import sys
-from PIL import Image
-from transformers import CLIPProcessor, CLIPModel
+import os
+from image_search import ImageSearchEngine
 
-# --- IMPORT BLOĞU ---
-try:
-    from langchain.tools import tool
-    from langchain_ollama import ChatOllama
-    from langgraph.prebuilt import create_react_agent
-    print("✓ Kütüphaneler başarıyla yüklendi")
-except ImportError as e:
-    print(f"[KRİTİK HATA] Kütüphane eksik: {e}")
-    print("Çözüm: pip install langchain langchain-community langchain-ollama langgraph")
-    sys.exit()
 
-# --- 1. SİSTEM KURULUMU ---
-print("\n" + "=" * 60)
-print("GÖRSEL ARAMA SİSTEMİ - CLIP + MISTRAL AI")
-print("=" * 60)
-
-IMAGE_FOLDER = "C:/Users/anil6/Desktop/Table-QA/image-searching/images"
-MODEL_ID = "openai/clip-vit-base-patch32"
-
-# Klasör kontrolü
-if not os.path.exists(IMAGE_FOLDER):
-    print(f"[HATA] '{IMAGE_FOLDER}' klasörü bulunamadı!")
-    sys.exit()
-
-# CLIP modeli yükleme
-print("\n>>> CLIP Modeli yükleniyor (ilk seferde ~30 sn sürer)...")
-try:
-    clip_model = CLIPModel.from_pretrained(MODEL_ID, use_safetensors=True)
-    clip_processor = CLIPProcessor.from_pretrained(MODEL_ID)
-    print("✓ CLIP Modeli hazır!")
-except Exception as e:
-    print(f"[HATA] Model yüklenemedi: {e}")
-    sys.exit()
-
-# --- 2. TOOL TANIMI ---
-@tool
-def resim_bul(query: str) -> str:
-    """
-    Kullanıcı bir görseli tarif ettiğinde (örneğin: 'kırmızı araba', 'deniz manzarası')
-    bu aracı kullanarak klasördeki en uygun resmi bulursun.
-    Girdi: Aranacak görselin tarifi (İngilizce veya Türkçe).
-    Çıktı: Bulunan dosya adı ve güven skoru.
-    """
-    try:
-        # Resimleri listele
-        current_files = [f for f in os.listdir(IMAGE_FOLDER) 
-                        if f.endswith(('.jpg', '.png', '.jpeg'))]
-        if not current_files:
-            return "Klasörde resim yok."
-
-        # Resimleri yükle
-        images = []
-        valid_files = []
-        for img_file in current_files:
-            try:
-                path = os.path.join(IMAGE_FOLDER, img_file)
-                images.append(Image.open(path))
-                valid_files.append(img_file)
-            except:
-                continue
-        
-        if not images:
-            return "Resimler açılamadı."
-
-        # CLIP ile analiz et
-        inputs = clip_processor(text=[query], images=images, 
-                               return_tensors="pt", padding=True)
-        outputs = clip_model(**inputs)
-        
-        probs = outputs.logits_per_image.softmax(dim=0)
-        idx = probs.argmax().item()
-        score = probs[idx].item()
-        
-        return f"Bulunan Dosya: '{valid_files[idx]}' (Güven: %{score*100:.1f})"
+def cmd_index(args):
+    """Görselleri indeksleme komutu."""
+    print("=" * 60)
+    print("TEXT-TO-IMAGE ARAMA SİSTEMİ - İNDEKSLEME")
+    print("=" * 60)
     
-    except Exception as e:
-        return f"Hata: {e}"
-
-# --- 3. AGENT KURULUMU ---
-print("\n>>> Mistral AI ajanı hazırlanıyor...")
-
-llm = ChatOllama(
-    model="mistral:latest",
-    temperature=0,
-    num_ctx=4096
-)
-
-tools = [resim_bul]
-
-# LangGraph ile agent oluştur (bu ÇALIŞIR)
-agent = create_react_agent(llm, tools)
-
-print("✓ Ajan hazır!\n")
-
-# --- 4. SORGULAMA ---
-print("=" * 60)
-print("SORGULAMA BAŞLIYOR")
-print("=" * 60)
-
-# Örnek sorular - images klasörünüzdeki resimlere göre düzenleyin
-sorular = [
-    "Kırmızı renkli bir arabanın olduğu resmi bul",
-    "Doğa manzarası veya ağaç içeren resmi getir",
-    "Şehir veya bina fotoğrafı hangisi"
-]
-
-for i, soru in enumerate(sorular, 1):
-    print(f"\n{'='*60}")
-    print(f"SORU {i}: {soru}")
-    print("="*60)
+    # Görsel dizininin varlığını kontrol et
+    if not os.path.exists(args.image_dir):
+        print(f"❌ Hata: {args.image_dir} dizini bulunamadı!")
+        sys.exit(1)
     
-    try:
-        # LangGraph stream kullanır
-        events = list(agent.stream(
-            {"messages": [("user", soru)]},
-            stream_mode="values"
-        ))
-        
-        # Son AI mesajını bul
-        if events:
-            last_event = events[-1]
-            if "messages" in last_event:
-                for msg in reversed(last_event["messages"]):
-                    if hasattr(msg, 'content') and msg.content:
-                        # Tool çağrılarını atla, sadece final cevabı göster
-                        if hasattr(msg, 'type') and msg.type == 'ai':
-                            if not msg.content.startswith('Bulunan Dosya:'):
-                                print(f"\n✅ CEVAP: {msg.content}\n")
-                                break
+    # Arama motorunu başlat
+    print(f"\nModel: {args.model}")
+    engine = ImageSearchEngine(model_name=args.model, pretrained=args.pretrained)
     
-    except Exception as e:
-        print(f"[HATA]: {e}")
+    # Görselleri indeksle
+    engine.index_images(args.image_dir)
+    
+    # İndeksi kaydet
+    if args.output_dir:
+        engine.save_index(args.output_dir)
+        print(f"\n✓ İndeks kaydedildi: {args.output_dir}")
+    
+    # İstatistikleri göster
+    stats = engine.get_stats()
+    print("\n" + "=" * 60)
+    print("İNDEKSLEME TAMAMLANDI")
+    print("=" * 60)
+    print(f"Toplam görsel: {stats['total_images']}")
+    print(f"Embedding boyutu: {stats['embedding_dim']}")
+    print("=" * 60)
 
-print("\n" + "="*60)
-print("İşlem tamamlandı!")
-print("="*60)
+
+def cmd_search(args):
+    """Metin ile arama komutu."""
+    print("=" * 60)
+    print("TEXT-TO-IMAGE ARAMA SİSTEMİ - ARAMA")
+    print("=" * 60)
+    
+    # İndeks dizininin varlığını kontrol et
+    if not os.path.exists(args.index_dir):
+        print(f"❌ Hata: {args.index_dir} dizini bulunamadı!")
+        print("Önce 'index' komutu ile görselleri indekslemelisiniz.")
+        sys.exit(1)
+    
+    # Arama motorunu başlat
+    print(f"\nModel: {args.model}")
+    engine = ImageSearchEngine(model_name=args.model, pretrained=args.pretrained)
+    
+    # İndeksi yükle
+    engine.load_index(args.index_dir)
+    
+    # Arama yap
+    print(f"\nSorgu: '{args.query}'")
+    print(f"Top-K: {args.top_k}")
+    print("\nArama yapılıyor...\n")
+    
+    results = engine.search(args.query, top_k=args.top_k)
+    
+    # Sonuçları göster
+    print("=" * 60)
+    print("ARAMA SONUÇLARI")
+    print("=" * 60)
+    
+    if not results:
+        print("Hiç sonuç bulunamadı!")
+    else:
+        for i, (image_path, score) in enumerate(results, 1):
+            print(f"\n{i}. Benzerlik: {score:.4f}")
+            print(f"   Yol: {image_path}")
+    
+    print("\n" + "=" * 60)
+
+
+def main():
+    """Ana fonksiyon - argümanları parse eder ve ilgili komutu çalıştırır."""
+    parser = argparse.ArgumentParser(
+        description="Text-to-Image Arama Sistemi",
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    
+    # Alt komutlar (subparsers)
+    subparsers = parser.add_subparsers(dest='command', help='Komutlar')
+    subparsers.required = True
+    
+    # INDEX komutu
+    parser_index = subparsers.add_parser('index', help='Görselleri indeksle')
+    parser_index.add_argument(
+        '--image-dir',
+        type=str,
+        required=True,
+        help='Görsellerin bulunduğu dizin'
+    )
+    parser_index.add_argument(
+        '--output-dir',
+        type=str,
+        default='./indices',
+        help='İndeksin kaydedileceği dizin (varsayılan: ./indices)'
+    )
+    parser_index.add_argument(
+        '--model',
+        type=str,
+        default='ViT-B-32',
+        help='OpenCLIP model adı (varsayılan: ViT-B-32)'
+    )
+    parser_index.add_argument(
+        '--pretrained',
+        type=str,
+        default='openai',
+        help='Pretrained model kaynağı (varsayılan: openai)'
+    )
+    parser_index.set_defaults(func=cmd_index)
+    
+    # SEARCH komutu
+    parser_search = subparsers.add_parser('search', help='Metin ile görsel ara')
+    parser_search.add_argument(
+        '--query',
+        type=str,
+        required=True,
+        help='Arama sorgusu (doğal dil)'
+    )
+    parser_search.add_argument(
+        '--index-dir',
+        type=str,
+        default='./indices',
+        help='İndeksin bulunduğu dizin (varsayılan: ./indices)'
+    )
+    parser_search.add_argument(
+        '--top-k',
+        type=int,
+        default=5,
+        help='Döndürülecek sonuç sayısı (varsayılan: 5)'
+    )
+    parser_search.add_argument(
+        '--model',
+        type=str,
+        default='ViT-B-32',
+        help='OpenCLIP model adı (varsayılan: ViT-B-32)'
+    )
+    parser_search.add_argument(
+        '--pretrained',
+        type=str,
+        default='openai',
+        help='Pretrained model kaynağı (varsayılan: openai)'
+    )
+    parser_search.set_defaults(func=cmd_search)
+    
+    # Argümanları parse et
+    args = parser.parse_args()
+    
+    # İlgili komutu çalıştır
+    args.func(args)
+
+
+if __name__ == '__main__':
+    main()
